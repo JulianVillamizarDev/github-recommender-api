@@ -1,0 +1,173 @@
+"""Django settings for githubrecommender project."""
+
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    pass
+else:
+    load_dotenv(BASE_DIR / ".env")
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-dev-only-CHANGE-ME-in-production",
+)
+
+DEBUG = _bool_env("DJANGO_DEBUG", True)
+
+ALLOWED_HOSTS = [
+    h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
+]
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "rest_framework",
+    "drf_spectacular",
+    "recommendations.apps.RecommendationsConfig",
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+ROOT_URLCONF = "githubrecommender.urls"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = "githubrecommender.wsgi.application"
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+}
+
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
+USE_I18N = True
+USE_TZ = True
+
+STATIC_URL = "static/"
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# DRF — Phase 1 endpoint is public (course project) but throttled.
+REST_FRAMEWORK = {
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.environ.get("THROTTLE_ANON", "20/min"),
+        "user": os.environ.get("THROTTLE_USER", "60/min"),
+    },
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",
+    ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "API de Recomendación de GitHub",
+    "DESCRIPTION": (
+        "Servicio backend que construye recomendaciones de usuarios de GitHub "
+        "a partir de un nodo semilla. Implementa la **Fase 1 — Extracción de "
+        "Datos**: recibe un nombre de usuario, valida su existencia contra la "
+        "API pública de GitHub y extrae la topología social del usuario "
+        "(repositorios, lenguajes de programación, colaboradores directos y "
+        "lista de seguidos) mediante un muestreo BFS de profundidad ≤ 2.\n\n"
+        "Las fases posteriores (construcción del grafo bipartito, cálculo de "
+        "afinidad mediante similitud coseno, transformación logarítmica y "
+        "búsqueda de candidatos con Dijkstra) consumirán la salida de este "
+        "endpoint."
+    ),
+    "VERSION": "0.1.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SCHEMA_PATH_PREFIX": r"/api/",
+    "TAGS": [
+        {"name": "Recomendaciones", "description": "Endpoints del motor de recomendación."},
+    ],
+    "CONTACT": {"name": "Equipo Teoría de Grafos"},
+    "LICENSE": {"name": "Uso académico"},
+    "SWAGGER_UI_SETTINGS": {
+        "deepLinking": True,
+        "persistAuthorization": True,
+        "displayOperationId": False,
+        "docExpansion": "list",
+    },
+    "REDOC_UI_SETTINGS": {
+        "expandResponses": "200,201",
+    },
+}
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "github-recommendation",
+    }
+}
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {"class": "logging.StreamHandler"},
+    },
+    "loggers": {
+        "recommendations": {"handlers": ["console"], "level": "INFO"},
+        "django": {"handlers": ["console"], "level": "INFO"},
+    },
+}

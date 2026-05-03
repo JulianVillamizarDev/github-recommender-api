@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c \"import django, rest_framework; print\\('django', django.__version__\\); print\\('drf', rest_framework.__version__\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pip install httpx python-dotenv)",
+      "Bash(.venv/Scripts/python.exe manage.py check)",
+      "Bash(.venv/Scripts/python.exe -m pip install drf-spectacular)",
+      "Bash(.venv/Scripts/python.exe -c \"import drf_spectacular; print\\(drf_spectacular.__version__\\)\")",
+      "Bash(.venv/Scripts/python.exe manage.py spectacular --validate --fail-on-warn --file /tmp/schema.yml)",
+      "Bash(.venv/Scripts/python.exe manage.py spectacular --validate --file schema.yml)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(rm schema.yml)"
+    ]
+  }
+}
