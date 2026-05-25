@@ -31,6 +31,13 @@ ALLOWED_HOSTS = [
     h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
 ]
 
+# Render injects the public hostname here; trust it automatically so we don't
+# have to hard-code the *.onrender.com URL in DJANGO_ALLOWED_HOSTS.
+_render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if _render_host:
+    ALLOWED_HOSTS.append(_render_host)
+    CSRF_TRUSTED_ORIGINS = [f"https://{_render_host}"]
+
 # Browser origins allowed to call the API (the React dev server is cross-origin:
 # Vite runs on :5173, Django on :8000). Comma-separated env var; defaults cover
 # Vite's localhost/127.0.0.1 dev URLs.
@@ -70,6 +77,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # WhiteNoise serves static files (admin/Swagger assets) in production
+    # without needing a separate web server; must sit right after security.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     # CORS must precede CommonMiddleware so its headers are added to every
     # response (including the preflight OPTIONS the React dev server sends).
     "corsheaders.middleware.CorsMiddleware",
@@ -120,6 +130,11 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

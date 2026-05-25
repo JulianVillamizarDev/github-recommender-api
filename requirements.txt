@@ -6,6 +6,8 @@ Django==6.0.4
 django-cors-headers==4.9.0
 djangorestframework==3.17.1
 drf-spectacular==0.29.0
+gunicorn==23.0.0
+whitenoise==6.8.2
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1

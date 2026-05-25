@@ -9,7 +9,9 @@
       "Bash(.venv/Scripts/python.exe manage.py spectacular --validate --fail-on-warn --file /tmp/schema.yml)",
       "Bash(.venv/Scripts/python.exe manage.py spectacular --validate --file schema.yml)",
       "Bash(.venv/Scripts/python.exe -c ' *)",
-      "Bash(rm schema.yml)"
+      "Bash(rm schema.yml)",
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pip install whitenoise gunicorn)",
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe manage.py check)"
     ]
   }
 }
