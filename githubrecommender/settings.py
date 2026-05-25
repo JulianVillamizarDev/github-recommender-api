@@ -31,6 +31,18 @@ ALLOWED_HOSTS = [
     h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
 ]
 
+# Browser origins allowed to call the API (the React dev server is cross-origin:
+# Vite runs on :5173, Django on :8000). Comma-separated env var; defaults cover
+# Vite's localhost/127.0.0.1 dev URLs.
+CORS_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if o.strip()
+]
+
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 # Logins to always exclude from recommendations (e.g. automation that runs under
@@ -52,11 +64,15 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "drf_spectacular",
+    "corsheaders",
     "recommendations.apps.RecommendationsConfig",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # CORS must precede CommonMiddleware so its headers are added to every
+    # response (including the preflight OPTIONS the React dev server sends).
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
