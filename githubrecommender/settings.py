@@ -33,6 +33,15 @@ ALLOWED_HOSTS = [
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
+# Logins to always exclude from recommendations (e.g. automation that runs under
+# a genuine User-type account, which type-based filtering can't catch). Comma-
+# separated env var, normalized to lowercase.
+RECOMMENDATION_DENYLIST = {
+    u.strip().lower()
+    for u in os.environ.get("RECOMMENDATION_DENYLIST", "").split(",")
+    if u.strip()
+}
+
 
 INSTALLED_APPS = [
     "django.contrib.admin",

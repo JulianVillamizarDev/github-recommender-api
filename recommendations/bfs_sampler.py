@@ -1,9 +1,11 @@
-"""Depth-bounded BFS sampler over the GitHub social graph (Phase 1 / FR03).
+"""Muestreador BFS de profundidad acotada sobre el grafo social de GitHub
+(Fase 1 / FR03).
 
-Follows the `bfs-sampling-strategy` skill:
-  - `visited` updated at enqueue time (no duplicate fetches across paths)
-  - per-layer parallel fetch with a bounded thread pool
-  - per-node truncation flags, partial results, structured termination reason
+Sigue el skill `bfs-sampling-strategy`:
+  - `visited` se actualiza al encolar (sin descargas duplicadas entre caminos).
+  - Descarga por capas en paralelo con un pool de hilos acotado.
+  - Banderas de truncamiento por nodo, resultados parciales y una razón de
+    terminación estructurada.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class BFSResult:
+    """Resultado de la extracción BFS: el snapshot normalizado de la vecindad
+    de la semilla (usuarios descubiertos y aristas por tipo), que consume la
+    Fase 2."""
+
     seed: str
     seed_profile: dict[str, Any]
     users: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -35,6 +41,9 @@ class BFSResult:
     truncated_nodes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serializa el resultado al dict que consume la Fase 2 (`build_graphs`),
+        agrupando las aristas por tipo y agregando un bloque `stats` con los
+        conteos."""
         return {
             "seed": self.seed,
             "seed_profile": self.seed_profile,
@@ -62,19 +71,31 @@ def sample_topology(
     max_depth: int = 2,
     per_node_limit: int = 50,
     max_workers: int = 8,
+    contrib_per_repo: int = 15,
+    contrib_budget: int = 150,
+    max_frontier: int = 50,
 ) -> BFSResult:
-    """BFS sample around `seed` to depth `max_depth` (1 or 2).
+    """Muestrea por BFS alrededor de `seed` hasta profundidad `max_depth` (1 o 2).
+
+    Los repos de cada usuario descargado se enriquecen con sus colaboradores
+    públicos vía REST (hasta `contrib_per_repo` por repo, con tope global de
+    `contrib_budget` llamadas por petición) — esto es lo que vincula a usuarios
+    distintos con un repo compartido, de modo que la proyección de la Fase 2
+    pueda conectar la semilla con la red de sus colaboradores.
 
     Raises:
-        GitHubNotFound: only if the seed itself does not exist (caller maps to 404).
+        GitHubNotFound: solo si la propia semilla no existe (el llamador lo
+            mapea a 404).
     """
     seed = seed.lower()
+    budget = [contrib_budget]  # mutable cell shared across enrichment calls
 
     seed_topo = client.fetch_user_topology(
         seed, per_page=per_node_limit, max_repo_pages=2, max_following_pages=2
     )
     if not seed_topo.get("found"):
         raise GitHubNotFound(f"GitHub user '{seed}' not found.")
+    _enrich_contributors(seed_topo, client, contrib_per_repo, budget, max_workers)
 
     result = BFSResult(
         seed=seed,
@@ -94,6 +115,10 @@ def sample_topology(
         if not next_frontier:
             break
         frontier = list(next_frontier)
+        if len(frontier) > max_frontier:
+            log.info("frontier capped %d -> %d at depth %d", len(frontier), max_frontier, depth)
+            result.truncated_nodes.append(f"frontier@depth{depth}")
+            frontier = frontier[:max_frontier]
         next_frontier = set()
 
         try:
@@ -107,6 +132,7 @@ def sample_topology(
         for login, topo in fetched.items():
             if topo is None or not topo.get("found"):
                 continue
+            _enrich_contributors(topo, client, contrib_per_repo, budget, max_workers)
             new_neighbors = _absorb_topology(login, topo, result, visited, is_seed=False)
             # Do not enqueue further: max_depth=2 means depth-1 nodes don't expand further.
             if depth + 1 < max_depth:
@@ -125,8 +151,9 @@ def _absorb_topology(
     *,
     is_seed: bool,
 ) -> set[str]:
-    """Record a fetched user's topology into `result`. Returns set of newly
-    discovered neighbor logins (added to `visited` here, at enqueue time)."""
+    """Registra la topología de un usuario descargado en `result`. Devuelve el
+    conjunto de logins de vecinos recién descubiertos (que se añaden a `visited`
+    aquí mismo, al momento de encolar)."""
     languages: dict[str, int] = {}
     repos: list[str] = []
     for repo in topo.get("repositories", []):
@@ -138,6 +165,9 @@ def _absorb_topology(
         for collab in repo.get("collaborators", []):
             if collab and collab != login:
                 result.edges_collaborator.append((login, collab))
+                # Contributor shares this repo → bipartite edge so the Phase 2
+                # projection links `collab` to everyone else on `repo_id`.
+                result.edges_user_repo.append((collab, repo_id))
 
     following = list(topo.get("following", []))
     for tgt in following:
@@ -173,6 +203,47 @@ def _absorb_topology(
     return new
 
 
+def _enrich_contributors(
+    topo: dict[str, Any],
+    client: GitHubGraphQLClient,
+    contrib_per_repo: int,
+    budget: list[int],
+    max_workers: int,
+    max_contrib_repos: int = 12,
+) -> None:
+    """Rellena el campo ``collaborators`` de cada repo con sus colaboradores
+    públicos obtenidos vía REST.
+
+    Muta ``topo`` en sitio. Solo se enriquecen los primeros ``max_contrib_repos``
+    repos del usuario (ya ordenados por actualización más reciente), de modo que
+    ningún usuario agote por sí solo el ``budget`` compartido — una lista de un
+    elemento que actúa como contador decreciente y limita el total de llamadas
+    REST por petición. Una vez agotado, los repos restantes conservan su lista
+    de colaboradores vacía (enriquecimiento parcial)."""
+    repos = topo.get("repositories", [])
+    if not repos or budget[0] <= 0 or contrib_per_repo <= 0:
+        return
+
+    # Submission runs on this thread, so decrementing the budget here is safe.
+    pending: dict[Any, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for repo in repos[:max_contrib_repos]:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            fut = pool.submit(
+                client.fetch_repo_contributors, repo["nameWithOwner"], contrib_per_repo
+            )
+            pending[fut] = repo
+        for fut in as_completed(pending):
+            repo = pending[fut]
+            try:
+                repo["collaborators"] = fut.result()
+            except Exception:
+                log.exception("contributor fetch failed for %s", repo.get("nameWithOwner"))
+                repo["collaborators"] = []
+
+
 def _fetch_frontier_parallel(
     frontier: list[str],
     client: GitHubGraphQLClient,
@@ -180,6 +251,12 @@ def _fetch_frontier_parallel(
     per_node_limit: int,
     max_workers: int,
 ) -> dict[str, dict[str, Any] | None]:
+    """Descarga la topología de toda una capa de la frontera en paralelo.
+
+    Devuelve un dict ``login → topología`` (o ``None`` si el usuario no existe o
+    su descarga falló). Si GitHub reporta límite de cuota a mitad de la capa,
+    cancela las descargas pendientes y propaga ``GitHubRateLimited`` para que el
+    llamador devuelva resultados parciales."""
     out: dict[str, dict[str, Any] | None] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {

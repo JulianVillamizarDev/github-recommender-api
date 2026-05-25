@@ -1,9 +1,13 @@
-"""Phase 1 API endpoint (FR01, FR02, FR03)."""
+"""Endpoint de la API que orquesta el pipeline de recomendación (FR01–FR08).
+
+Ejecuta las cuatro fases en secuencia (extracción BFS → grafo → afinidad →
+recomendación) y mapea las excepciones del cliente de GitHub a códigos HTTP."""
 
 from __future__ import annotations
 
 import logging
 
+from django.conf import settings
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiResponse,
@@ -16,7 +20,10 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
+from .affinity import score_affinity
 from .bfs_sampler import sample_topology
+from .graph_builder import build_graphs
+from .recommender import hydrate_recommendations, recommend
 from .github_client import (
     GitHubAuthError,
     GitHubGraphQLClient,
@@ -116,35 +123,67 @@ log = logging.getLogger(__name__)
     ],
 )
 class RecommendView(APIView):
-    """POST /api/recommend  — Phase 1: extract topology around a seed user.
+    """POST /api/recommend — ejecuta el pipeline completo sobre un usuario semilla.
 
-    FR01: accepts `username` from the JSON body.
-    FR02: validates format (regex) and existence (GitHub API check).
-    FR03: extracts repos, languages, collaborators, and following (BFS depth ≤ 2).
-    Phases 2–4 (graph build, scoring, ranking) plug into this output later.
+    FR01: recibe `username` del cuerpo JSON.
+    FR02: valida formato (regex) y existencia (consulta a la API de GitHub).
+    FR03: extrae repos, lenguajes, colaboradores y following (BFS de profundidad ≤ 2).
+    FR04–FR08: construye el grafo, calcula la afinidad y rankea las recomendaciones.
+
+    Endpoint público (`AllowAny`) con throttling anónimo.
     """
 
     permission_classes = [AllowAny]
     throttle_classes = [AnonRateThrottle]
 
     def post(self, request, *args, **kwargs):
+        """Atiende la petición ejecutando las cuatro fases del pipeline.
+
+        Valida el cuerpo, confirma que la semilla existe (404 si no), corre el
+        muestreo BFS y las Fases 2–4, y devuelve una respuesta liviana
+        (recomendaciones + resumen), o el volcado completo por fase si se pide
+        `verbose`. Las excepciones del cliente de GitHub se mapean a 404/429/500/502.
+        """
         ser = RecommendRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         username = ser.validated_data["username"]
         max_depth = ser.validated_data["max_depth"]
         per_node_limit = ser.validated_data["per_node_limit"]
+        top_n = ser.validated_data["top_n"]
+        verbose = ser.validated_data["verbose"]
 
         try:
             with GitHubGraphQLClient() as client:
                 if not client.user_exists(username):
                     raise NotFound(_error("user_not_found", f"GitHub user '{username}' not found.", username=username))
 
+                # Phase 1 (FR01–FR03): BFS topology extraction around the seed.
                 bfs = sample_topology(
                     username,
                     client=client,
                     max_depth=max_depth,
                     per_node_limit=per_node_limit,
                 )
+                extraction = bfs.to_dict()
+
+                # Phase 2 (FR04): build the in-memory NetworkX topology —
+                # bipartite graph, User↔User projection, seed Following set.
+                bundle = build_graphs(extraction)
+
+                # Phase 3 (FR05): score each User↔User edge (cosine language
+                # similarity + min-max shared-repo overlap, weighted sum).
+                affinity = score_affinity(bundle)
+
+                # Phase 4 (FR06–FR08): -log transform + Dijkstra trust
+                # propagation, exclude direct collaborators and the Following
+                # set, take Top N, then hydrate their profiles (one batch call).
+                result = recommend(
+                    bundle,
+                    extraction["users"],
+                    top_n=top_n,
+                    denylist=settings.RECOMMENDATION_DENYLIST,
+                )
+                hydrate_recommendations(result, client)
         except GitHubAuthError as exc:
             log.error("github auth error: %s", exc)
             return Response(
@@ -168,11 +207,30 @@ class RecommendView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        return Response({
-            "phase": 1,
-            "extraction": bfs.to_dict(),
-        })
+        rec = result.to_dict()
+        # Lean by default: the seed's recommendations + compact run summary.
+        # The full per-phase data (every graph edge, all sampled users) is a
+        # large debug dump, returned only when `verbose` is requested.
+        response = {
+            "seed": result.seed,
+            "recommendations": rec["recommendations"],
+            "summary": {
+                "users_sampled": extraction["stats"]["users"],
+                "graph_nodes": bundle.user_graph.number_of_nodes(),
+                "graph_edges": bundle.user_graph.number_of_edges(),
+                "alpha": affinity.alpha,
+                "truncated_reason": extraction["truncated_reason"],
+                **rec["stats"],
+            },
+        }
+        if verbose:
+            response["extraction"] = extraction
+            response["graph"] = bundle.to_dict()
+            response["affinity"] = affinity.to_dict(bundle.user_graph)
+
+        return Response(response)
 
 
 def _error(code: str, message: str, **details) -> dict:
+    """Construye la envoltura de error estándar `{"error": {code, message, details}}`."""
     return {"error": {"code": code, "message": message, "details": details}}
