@@ -28,6 +28,8 @@ python manage.py runserver        # serves http://127.0.0.1:8000
 - API docs (Swagger): `http://127.0.0.1:8000/api/docs/`  · ReDoc: `/api/redoc/` · OpenAPI schema: `/api/schema/`
 - There is **no test suite yet** and no linter configured. `python manage.py check` is the only static gate.
 
+> **Git boundary:** the git repository is rooted at this `github-recommendation/` directory, not the parent `TEORIA DE GRAFOS/` folder. The sibling `github-user-recommender-mockup/` frontend and the parent-level root `CLAUDE.md` are **untracked** — every commit, branch, and `git status` covers backend files only.
+
 Example request:
 ```powershell
 curl -X POST http://127.0.0.1:8000/api/recommend -H "Content-Type: application/json" -d '{\"username\": \"octocat\"}'

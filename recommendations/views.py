@@ -231,6 +231,61 @@ class RecommendView(APIView):
         return Response(response)
 
 
+@extend_schema(
+    tags=["Operaciones"],
+    summary="Liveness check (ping)",
+    description=(
+        "Sonda de *liveness*: confirma que el proceso está vivo y respondiendo. "
+        "No toca la base de datos ni la API de GitHub, así que siempre devuelve "
+        "`200` mientras el servidor esté en pie. Útil para health checks de "
+        "plataformas (Render/Vercel/Docker) y balanceadores."
+    ),
+    responses={200: OpenApiResponse(description='`{"message": "pong"}`')},
+)
+class PingView(APIView):
+    """GET /api/ping — liveness mínima, sin dependencias externas."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def get(self, request, *args, **kwargs):
+        """Devuelve `pong` sin tocar dependencias externas."""
+        return Response({"message": "pong"})
+
+
+@extend_schema(
+    tags=["Operaciones"],
+    summary="Readiness check (health)",
+    description=(
+        "Sonda de *readiness*: reporta si el servicio está listo para atender "
+        "el pipeline de recomendación. Verifica que el `GITHUB_TOKEN` esté "
+        "configurado (sin él, `POST /api/recommend` falla con `500`). Devuelve "
+        "`200` con `status='ok'` cuando todo está listo, o `503` con "
+        "`status='degraded'` y el detalle de los chequeos que fallaron."
+    ),
+    responses={
+        200: OpenApiResponse(description="Servicio listo (`status='ok'`)."),
+        503: OpenApiResponse(description="Servicio degradado (`status='degraded'`)."),
+    },
+)
+class HealthView(APIView):
+    """GET /api/health — readiness: valida la configuración mínima del servicio."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def get(self, request, *args, **kwargs):
+        """Comprueba la configuración requerida y reporta el estado de salud."""
+        checks = {
+            "github_token": bool(getattr(settings, "GITHUB_TOKEN", "") or ""),
+        }
+        healthy = all(checks.values())
+        return Response(
+            {"status": "ok" if healthy else "degraded", "checks": checks},
+            status=status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
 def _error(code: str, message: str, **details) -> dict:
     """Construye la envoltura de error estándar `{"error": {code, message, details}}`."""
     return {"error": {"code": code, "message": message, "details": details}}
